@@ -1,0 +1,341 @@
+{% extends "base.html" %}
+
+{% block title %}PicToText - Главная{% endblock %}
+
+{% block styles %}
+<style>
+    .hero-section {
+        text-align: center;
+        padding: 80px 20px;
+        min-height: 70vh;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+    }
+
+    .hero-title {
+        margin-bottom: 60px;
+        line-height: 1.2;
+    }
+
+    .hero-title h1 {
+        font-size: 48px;
+        font-weight: bold;
+        margin: 0;
+        margin-bottom: 10px;
+    }
+
+    .title-line {
+        display: block;
+        margin-bottom: 8px;
+    }
+
+    .title-line-1 { color: #000000; }
+    .title-line-2 { color: #4b5563; }
+    .title-line-3 { color: #6b7280; }
+    .title-line-4 { color: #9ca3af; }
+    .title-line-5 { color: #d1d5db; }
+    .title-line-6 { color: #e5e7eb; }
+
+    .upload-section {
+        margin-top: 40px;
+    }
+
+    .upload-button {
+        background-color: #f87171;
+        color: white;
+        border: none;
+        padding: 15px 40px;
+        border-radius: 30px;
+        font-size: 18px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        margin-bottom: 30px;
+    }
+
+    .upload-button:hover {
+        background-color: #ef4444;
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(248, 113, 113, 0.4);
+    }
+
+    .upload-button:disabled {
+        background-color: #9ca3af;
+        cursor: not-allowed;
+        transform: none;
+        box-shadow: none;
+    }
+
+    .drop-zone {
+        border: 2px dashed #d1d5db;
+        border-radius: 12px;
+        padding: 40px;
+        margin-top: 20px;
+        text-align: center;
+        transition: all 0.3s ease;
+        background-color: white;
+        cursor: pointer;
+    }
+
+    .drop-zone:hover {
+        border-color: #f87171;
+        background-color: #fef2f2;
+    }
+
+    .drop-zone.dragover {
+        border-color: #ef4444;
+        background-color: #fef2f2;
+        transform: scale(1.02);
+    }
+
+    .drop-zone-icon {
+        font-size: 48px;
+        margin-bottom: 15px;
+    }
+
+    .drop-zone-text {
+        font-size: 18px;
+        color: #374151;
+        margin-bottom: 10px;
+    }
+
+    .drop-zone-subtext {
+        font-size: 14px;
+        color: #6b7280;
+    }
+
+    .file-info {
+        background-color: white;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 20px;
+        margin-top: 20px;
+        max-width: 500px;
+        margin-left: auto;
+        margin-right: auto;
+    }
+
+    .processing-indicator {
+        display: inline-block;
+        width: 20px;
+        height: 20px;
+        border: 2px solid #f3f4f6;
+        border-top: 2px solid #f87171;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        margin-right: 10px;
+    }
+
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
+
+    .format-info {
+        margin-top: 40px;
+        font-size: 14px;
+        color: #6b7280;
+        line-height: 1.5;
+    }
+
+    @media (max-width: 768px) {
+        .hero-title h1 {
+            font-size: 32px;
+        }
+
+        .upload-button {
+            padding: 12px 30px;
+            font-size: 16px;
+        }
+
+        .drop-zone {
+            padding: 30px 20px;
+        }
+
+        .drop-zone-icon {
+            font-size: 36px;
+        }
+
+        .drop-zone-text {
+            font-size: 16px;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="hero-section fade-in">
+    <div class="hero-title">
+        <h1>
+            <span class="title-line title-line-1">Приложение,</span>
+            <span class="title-line title-line-2">которое разберется в ваших файлах</span>
+            <span class="title-line title-line-3">статьях</span>
+            <span class="title-line title-line-4">отчетах</span>
+            <span class="title-line title-line-5">договорах</span>
+            <span class="title-line title-line-6">записях</span>
+        </h1>
+    </div>
+
+    <div class="upload-section">
+        <button class="upload-button" id="uploadButton" onclick="document.getElementById('fileInput').click()">
+            Загрузить
+        </button>
+
+        <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+            <div class="drop-zone-icon">📄</div>
+            <div class="drop-zone-text">Перетащите файл сюда</div>
+            <div class="drop-zone-subtext">или нажмите для выбора файла</div>
+        </div>
+
+        <input type="file" id="fileInput" style="display: none"
+               accept=".pdf,.doc,.docx,.txt,.jpg,.jpeg,.png,.tiff">
+
+        <div class="file-info" id="fileInfo" style="display: none">
+            <div id="fileDetails"></div>
+        </div>
+
+        <div class="format-info">
+            <strong>Поддерживаемые форматы:</strong> PDF, DOC, DOCX, TXT, JPG, PNG, TIFF<br>
+            <strong>Максимальный размер:</strong> 10 MB
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const fileInput = document.getElementById('fileInput');
+    const uploadButton = document.getElementById('uploadButton');
+    const dropZone = document.getElementById('dropZone');
+    const fileInfo = document.getElementById('fileInfo');
+    const fileDetails = document.getElementById('fileDetails');
+
+    let isProcessing = false;
+
+    // Обработка выбора файла
+    fileInput.addEventListener('change', handleFileSelect);
+
+    // Обработка drag and drop
+    dropZone.addEventListener('dragover', handleDragOver);
+    dropZone.addEventListener('dragleave', handleDragLeave);
+    dropZone.addEventListener('drop', handleDrop);
+
+    function handleFileSelect(event) {
+        const file = event.target.files[0];
+        if (file) {
+            processFile(file);
+        }
+    }
+
+    function handleDragOver(event) {
+        event.preventDefault();
+        dropZone.classList.add('dragover');
+    }
+
+    function handleDragLeave(event) {
+        event.preventDefault();
+        dropZone.classList.remove('dragover');
+    }
+
+    function handleDrop(event) {
+        event.preventDefault();
+        dropZone.classList.remove('dragover');
+
+        const files = event.dataTransfer.files;
+        if (files.length > 0) {
+            processFile(files[0]);
+        }
+    }
+
+    function processFile(file) {
+        if (isProcessing) return;
+
+        // Проверка размера файла
+        if (file.size > 10 * 1024 * 1024) {
+            showNotification('Размер файла не должен превышать 10 MB', 'error');
+            return;
+        }
+
+        // Проверка типа файла
+        const allowedTypes = [
+            'application/pdf',
+            'application/msword',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            'text/plain',
+            'image/jpeg',
+            'image/png',
+            'image/tiff'
+        ];
+
+        if (!allowedTypes.includes(file.type)) {
+            showNotification('Неподдерживаемый тип файла', 'error');
+            return;
+        }
+
+        isProcessing = true;
+        updateUI(true);
+
+        // Показать информацию о файле
+        const sizeString = formatFileSize(file.size);
+        fileDetails.innerHTML = `
+            <strong>Выбран файл:</strong> ${file.name}<br>
+            <strong>Размер:</strong> ${sizeString}<br>
+            <strong>Тип:</strong> ${file.type}
+        `;
+        fileInfo.style.display = 'block';
+
+        // Отправка файла на сервер
+        const formData = new FormData();
+        formData.append('file', file);
+
+        fetch('/upload', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showNotification(data.message, 'success');
+                setTimeout(() => {
+                    fileInfo.style.display = 'none';
+                    fileInput.value = '';
+                }, 3000);
+            } else {
+                showNotification(data.error || 'Ошибка при обработке файла', 'error');
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            showNotification('Ошибка при загрузке файла', 'error');
+        })
+        .finally(() => {
+            isProcessing = false;
+            updateUI(false);
+        });
+    }
+
+    function updateUI(processing) {
+        if (processing) {
+            uploadButton.innerHTML = '<span class="processing-indicator"></span>Обрабатываю...';
+            uploadButton.disabled = true;
+            dropZone.style.pointerEvents = 'none';
+            dropZone.style.opacity = '0.6';
+        } else {
+            uploadButton.innerHTML = 'Загрузить';
+            uploadButton.disabled = false;
+            dropZone.style.pointerEvents = 'auto';
+            dropZone.style.opacity = '1';
+        }
+    }
+    
+    function formatFileSize(bytes) {
+        if (bytes === 0) return '0 Bytes';
+        const k = 1024;
+        const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    }
+</script>
+{% endblock %}

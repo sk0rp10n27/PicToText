@@ -1,0 +1,295 @@
+{% extends "base.html" %}
+
+{% block title %}PicToText - История{% endblock %}
+
+{% block styles %}
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+<style>
+    .history-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 30px;
+        padding: 0 20px;
+    }
+
+    .history-title {
+        font-size: 32px;
+        font-weight: bold;
+        color: #1f2937;
+    }
+
+    .header-actions {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+    }
+
+    .btn {
+        padding: 8px 16px;
+        border-radius: 8px;
+        font-size: 14px;
+        transition: all 0.2s;
+        text-decoration: none;
+        display: inline-block;
+    }
+
+    .btn-outline {
+        border: 1px solid #d1d5db;
+        color: #374151;
+        background: white;
+    }
+
+    .btn-outline:hover {
+        background: #f9fafb;
+    }
+
+    .btn-danger {
+        background-color: #dc3545;
+        color: white;
+        border: none;
+    }
+
+    .btn-danger:hover {
+        background-color: #c82333;
+        transform: translateY(-1px);
+    }
+
+    .files-container {
+        max-width: 1000px;
+        margin: 0 auto;
+    }
+
+    .file-card {
+        background-color: white;
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 25px;
+        margin-bottom: 20px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        transition: all 0.3s ease;
+    }
+
+    .file-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.15);
+    }
+
+    .file-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        margin-bottom: 15px;
+    }
+
+    .file-name {
+        font-size: 18px;
+        font-weight: bold;
+        color: #1f2937;
+        margin-bottom: 5px;
+    }
+
+    .file-date {
+        font-size: 12px;
+        color: #6b7280;
+    }
+
+    .file-type {
+        padding: 6px 12px;
+        border-radius: 20px;
+        font-size: 10px;
+        font-weight: bold;
+        text-transform: uppercase;
+    }
+
+    .file-type.pdf {
+        background-color: #fef2f2;
+        color: #dc2626;
+    }
+
+    .file-type.doc {
+        background-color: #eff6ff;
+        color: #2563eb;
+    }
+
+    .file-type.img {
+        background-color: #f0fdf4;
+        color: #16a34a;
+    }
+
+    .extracted-text-label {
+        font-size: 12px;
+        font-weight: bold;
+        color: #374151;
+        margin-bottom: 8px;
+    }
+
+    .extracted-text-container {
+        background-color: #f9fafb;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 0;
+        margin-bottom: 15px;
+        overflow: hidden;
+    }
+
+    .text-border {
+        width: 4px;
+        background-color: #f87171;
+        float: left;
+        height: 100%;
+        min-height: 80px;
+    }
+
+    .extracted-text {
+        padding: 15px;
+        font-size: 12px;
+        color: #374151;
+        line-height: 1.5;
+        margin-left: 4px;
+        background-color: #f9fafb;
+    }
+
+    .view-full-link {
+        display: inline-block;
+        margin-top: 10px;
+        color: #4f46e5;
+        font-weight: 500;
+        font-size: 13px;
+        transition: all 0.2s;
+    }
+
+    .view-full-link:hover {
+        color: #3730a3;
+        text-decoration: underline;
+    }
+
+    .view-full-link i {
+        margin-right: 5px;
+    }
+
+    .file-stats {
+        display: flex;
+        justify-content: space-between;
+        font-size: 12px;
+        color: #6b7280;
+    }
+
+    .stats-left {
+        display: flex;
+        gap: 20px;
+    }
+
+    .fade-in-up {
+        animation: fadeInUp 0.6s ease-out;
+    }
+
+    @keyframes fadeInUp {
+        from {
+            opacity: 0;
+            transform: translateY(30px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    @media (max-width: 768px) {
+        .history-header {
+            flex-direction: column;
+            gap: 15px;
+            text-align: center;
+            padding: 0 10px;
+        }
+
+        .header-actions {
+            width: 100%;
+            justify-content: center;
+        }
+
+        .history-title {
+            font-size: 24px;
+        }
+
+        .file-card {
+            padding: 20px;
+            margin-bottom: 15px;
+        }
+
+        .file-header {
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .file-name {
+            font-size: 16px;
+        }
+
+        .file-stats {
+            flex-direction: column;
+            gap: 8px;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="fade-in">
+    <div class="history-header">
+        <h1 class="history-title">История обработки</h1>
+        <div class="header-actions">
+            <a href="{{ url_for('index') }}" class="btn btn-outline">Назад</a>
+            <form action="{{ url_for('clear_history') }}" method="POST" class="d-inline">
+                <button type="submit" class="btn btn-danger"
+                        onclick="return confirm('Вы уверены, что хотите полностью очистить историю? Это действие нельзя отменить.')">
+                    <i class="fas fa-trash-alt"></i> Очистить историю
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <div class="files-container">
+        {% for file in files %}
+        <div class="file-card fade-in-up" style="animation-delay: {{ loop.index0 * 0.1 }}s">
+            <div class="file-header">
+                <div>
+                    <div class="file-name">{{ file.name }}</div>
+                    <div class="file-date">Обработан: {{ file.processed_date }}</div>
+                </div>
+                <div class="file-type {{ file.type.lower() }}">
+                    {{ file.type }}
+                </div>
+            </div>
+
+            <div class="extracted-text-label">
+                Извлеченный текст:
+            </div>
+
+            <div class="extracted-text-container">
+                <div class="text-border"></div>
+                <div class="extracted-text">
+                    {% if file.extracted_text|length > 200 %}
+                        {{ file.extracted_text[:200] }}...
+                        <a href="{{ url_for('file_details', file_id=file._id) }}" class="view-full-link">
+                            <i class="fas fa-external-link-alt"></i> Просмотреть полностью
+                        </a>
+                    {% else %}
+                        {{ file.extracted_text }}
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="file-stats">
+                <div class="stats-left">
+                    <span>Размер: {{ file.size }}</span>
+                </div>
+                <div class="stats-right">
+                    <span>Точность: {{ file.accuracy }}%</span>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}
