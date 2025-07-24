@@ -87,7 +87,22 @@ class AccuracyCalculator:
         if not text:
             return 0
 
-        metrics = {'unusual_chars': 0, 'digit_ratio': 0, 'line_breaks': 0}
+        # Проверка на "мусорный" текст
+        if len(text) > 1000 and len(set(text)) < 10:
+            return 0
+
+        metrics = {
+            'unusual_chars': 0,
+            'digit_ratio': 0,
+            'line_breaks': 0,
+            'word_lengths': [],
+            'spaces_ratio': 0
+        }
+
+        words = text.split()
+        metrics['word_lengths'] = [len(word) for word in words if word.isalpha()]
+        metrics['spaces_ratio'] = text.count(' ') / len(text) if text else 0
+
         for char in text:
             if not char.isalnum() and char not in ' .,!?;:-()\n\'"':
                 metrics['unusual_chars'] += 1
@@ -98,9 +113,21 @@ class AccuracyCalculator:
         metrics['line_breaks'] = text.count('\n') / len(text.splitlines()) if text else 0
 
         quality = 100
+
+        # Штрафы за проблемы
         quality -= metrics['unusual_chars'] * 0.5
         quality -= metrics['digit_ratio'] * 30
         quality -= min(20, metrics['line_breaks'] * 10)
+
+        # Проверка среднего длины слова
+        if metrics['word_lengths']:
+            avg_word_len = mean(metrics['word_lengths'])
+            if avg_word_len < 2 or avg_word_len > 12:
+                quality -= 20
+
+        # Проверка соотношения пробелов
+        if not 0.1 < metrics['spaces_ratio'] < 0.3:
+            quality -= 15
 
         return max(0, min(100, quality))
 
@@ -133,33 +160,45 @@ class OCRProcessor:
         except Exception:
             return False
 
-    def _preprocess_image(self, img):
-        """Предварительная обработка изображения для улучшения OCR"""
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        gray = cv2.medianBlur(gray, 3)
-        gray = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                     cv2.THRESH_BINARY, 11, 2)
-        kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
-        gray = cv2.filter2D(gray, -1, kernel)
-        return gray
-
     def process_image(self, image):
+        """Улучшенная обработка изображений с дополнительными этапами предобработки"""
         try:
             if isinstance(image, str):
+                # Если передан путь к файлу
                 img = cv2.imread(image)
+                if img is None:
+                    with Image.open(image) as img_pil:
+                        img = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
             else:
+                # Если передано изображение напрямую
                 img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
 
             if img is None:
                 raise ValueError("Invalid image")
 
+            # Конвертация в grayscale
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
+            # Улучшение контраста с CLAHE
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            enhanced = clahe.apply(gray)
+
+            # Шумоподавление
+            denoised = cv2.fastNlMeansDenoising(enhanced, h=10)
+
+            # Бинаризация
+            _, binary = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+            # Дополнительная обработка для улучшения качества
+            kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
+            processed = cv2.filter2D(binary, -1, kernel)
+
+            # Распознавание с улучшенными параметрами
+            custom_config = r'--oem 3 --psm 6 -c preserve_interword_spaces=1'
             data = pytesseract.image_to_data(
-                binary,
+                processed,
                 lang=self.default_languages,
-                config='--psm 6',
+                config=custom_config,
                 output_type=pytesseract.Output.DICT
             )
 
@@ -177,7 +216,7 @@ class OCRProcessor:
                 'source': 'image'
             }
         except Exception as e:
-            logger.error(f"OCR processing error: {str(e)}")
+            logger.error(f"OCR processing error: {str(e)}", exc_info=True)
             return {
                 'text': f"Ошибка обработки: {str(e)}",
                 'accuracy': 0,
@@ -187,11 +226,16 @@ class OCRProcessor:
 
     def _extract_images_from_docx(self, docx_path):
         try:
-            image_results = {'text': '', 'accuracy': 0, 'confidence_data': []}
+            image_results = {
+                'text': '',
+                'accuracy': 0,
+                'confidence_data': [],
+                'image_count': 0
+            }
 
             with zipfile.ZipFile(docx_path) as z:
                 for file in z.namelist():
-                    if file.startswith('word/media/'):
+                    if file.startswith('word/media/') and file.split('.')[-1].lower() in ['png', 'jpg', 'jpeg', 'bmp']:
                         with z.open(file) as img_file:
                             img_data = img_file.read()
 
@@ -199,12 +243,14 @@ class OCRProcessor:
                                 temp_img.write(img_data)
                                 temp_img_path = temp_img.name
 
-                            ocr_result = self.process_image(temp_img_path)
-                            os.unlink(temp_img_path)
-
-                            if ocr_result['text'].strip():
-                                image_results['text'] += f"{ocr_result['text']}\n"
-                                image_results['confidence_data'].extend(ocr_result['confidence_data'])
+                            try:
+                                ocr_result = self.process_image(temp_img_path)
+                                if ocr_result['text'].strip():
+                                    image_results['text'] += f"{ocr_result['text']}\n"
+                                    image_results['confidence_data'].extend(ocr_result['confidence_data'])
+                                    image_results['image_count'] += 1
+                            finally:
+                                os.unlink(temp_img_path)
 
             if image_results['confidence_data']:
                 image_results['accuracy'] = self.accuracy_calculator.calculate_from_confidence(
@@ -213,35 +259,78 @@ class OCRProcessor:
 
             return image_results
         except Exception as e:
-            logger.error(f"Error extracting images from DOCX: {str(e)}")
-            return {'text': f"[Ошибка извлечения изображений: {str(e)}]", 'accuracy': 0, 'confidence_data': []}
+            logger.error(f"Error extracting images from DOCX: {str(e)}", exc_info=True)
+            return {
+                'text': f"[Ошибка извлечения изображений: {str(e)}]",
+                'accuracy': 0,
+                'confidence_data': [],
+                'image_count': 0
+            }
 
     def _process_docx(self, docx_path):
         try:
-            result = {'text': '', 'accuracy': 0, 'source': 'docx', 'confidence_data': []}
+            result = {
+                'text': '',
+                'accuracy': 0,
+                'source': 'docx',
+                'confidence_data': [],
+                'has_text': False,
+                'has_images': False
+            }
 
+            # Извлекаем текст из документа
             doc = Document(docx_path)
-            text_parts = [para.text for para in doc.paragraphs if para.text.strip()]
+            text_parts = []
+
+            for para in doc.paragraphs:
+                if para.text.strip():
+                    text_parts.append(para.text)
+
             doc_text = "\n".join(text_parts)
+            result['has_text'] = bool(doc_text.strip())
 
-            image_texts = self._extract_images_from_docx(docx_path)
+            # Извлекаем текст из таблиц
+            table_texts = []
+            for table in doc.tables:
+                for row in table.rows:
+                    for cell in row.cells:
+                        if cell.text.strip():
+                            table_texts.append(cell.text)
 
+            if table_texts:
+                doc_text += "\n\n[Текст из таблиц]:\n" + "\n".join(table_texts)
+                result['has_text'] = True
+
+            # Извлекаем текст из изображений
+            image_result = self._extract_images_from_docx(docx_path)
+            result['has_images'] = bool(image_result['text'].strip())
+
+            # Комбинируем результаты
             result['text'] = doc_text
-            if image_texts['text'].strip():
-                result['text'] += f"\n\n[Текст из изображений]:\n{image_texts['text']}"
-                result['confidence_data'] = image_texts['confidence_data']
+            if image_result['text'].strip():
+                result['text'] += f"\n\n[Текст из изображений]:\n{image_result['text']}"
+                result['confidence_data'] = image_result['confidence_data']
 
-            doc_quality = self.accuracy_calculator.calculate_text_quality(doc_text)
-            if image_texts['text'].strip():
-                combined_accuracy = (doc_quality * 0.6 + image_texts['accuracy'] * 0.4)
+            # Рассчитываем точность
+            if result['has_text'] and result['has_images']:
+                # Если есть и текст и изображения
+                text_quality = self.accuracy_calculator.calculate_text_quality(doc_text)
+                combined_accuracy = (text_quality * 0.7 + image_result['accuracy'] * 0.3)
+                result['accuracy'] = round(combined_accuracy, 1)
+            elif result['has_text']:
+                # Если только текст
+                result['accuracy'] = self.accuracy_calculator.calculate_text_quality(doc_text)
+            elif result['has_images']:
+                # Если только изображения
+                result['accuracy'] = image_result['accuracy']
             else:
-                combined_accuracy = doc_quality
-
-            result['accuracy'] = round(combined_accuracy, 1)
+                # Если ничего не найдено
+                result['accuracy'] = 0
+                result['text'] = "Не удалось извлечь текст из DOCX файла"
 
             return result
         except Exception as e:
-            logger.error(f"DOCX processing error: {str(e)}")
+            logger.error(f"DOCX processing error: {str(e)}", exc_info=True)
             return {
                 'text': f"Ошибка обработки DOCX: {str(e)}",
                 'accuracy': 0,
@@ -296,7 +385,7 @@ class OCRProcessor:
                         os.remove(temp_pdf)
 
         except Exception as e:
-            logger.error(f"DOC processing error: {str(e)}")
+            logger.error(f"DOC processing error: {str(e)}", exc_info=True)
             return {
                 'text': f"Ошибка обработки DOC: {str(e)}",
                 'accuracy': 0,
@@ -308,7 +397,13 @@ class OCRProcessor:
 
     def process_pdf(self, file_path):
         try:
-            result = {'text': '', 'accuracy': 0, 'pages': [], 'source': 'pdf', 'confidence_data': []}
+            result = {
+                'text': '',
+                'accuracy': 0,
+                'pages': [],
+                'source': 'pdf',
+                'confidence_data': []
+            }
 
             try:
                 with pdfplumber.open(file_path) as pdf:
@@ -352,14 +447,16 @@ class OCRProcessor:
                         continue
 
             if result['pages']:
-                result['text'] = "\n".join(f"--- Страница {i + 1} [Точность: {p['accuracy']}%] ---\n{p['text']}"
-                                           for i, p in enumerate(result['pages']))
+                result['text'] = "\n".join(
+                    f"--- Страница {i + 1} [Точность: {p['accuracy']}%] ---\n{p['text']}"
+                    for i, p in enumerate(result['pages'])
+                )
                 result['accuracy'] = round(mean(p['accuracy'] for p in result['pages']), 1)
                 result['confidence_data'] = [c for p in result['pages'] for c in p.get('confidence_data', [])]
 
             return result
         except Exception as e:
-            logger.error(f"PDF processing error: {str(e)}")
+            logger.error(f"PDF processing error: {str(e)}", exc_info=True)
             return {
                 'text': f"Ошибка обработки PDF: {str(e)}",
                 'accuracy': 0,
@@ -421,7 +518,7 @@ class OCRProcessor:
                 }
 
             except Exception as e:
-                logger.error(f"Text decoding error: {str(e)}")
+                logger.error(f"Text decoding error: {str(e)}", exc_info=True)
                 return {
                     'text': f"Ошибка декодирования текста: {str(e)}",
                     'accuracy': 0,
@@ -430,7 +527,7 @@ class OCRProcessor:
                 }
 
         except Exception as e:
-            logger.error(f"Text file processing error: {str(e)}")
+            logger.error(f"Text file processing error: {str(e)}", exc_info=True)
             return {
                 'text': f"Ошибка обработки текстового файла: {str(e)}",
                 'accuracy': 0,
@@ -595,7 +692,7 @@ def upload_file():
             })
 
         except Exception as e:
-            logger.error(f"Error processing file: {str(e)}")
+            logger.error(f"Error processing file: {str(e)}", exc_info=True)
             return jsonify({'error': f'Ошибка обработки файла: {str(e)}'}), 500
 
         finally:
@@ -611,7 +708,7 @@ def clear_history():
         result = FileProcessor.clear_history(session['session_id'])
         flash(f'Удалено {result.deleted_count} файлов из истории', 'success')
     except Exception as e:
-        logger.error(f"Error clearing history: {str(e)}")
+        logger.error(f"Error clearing history: {str(e)}", exc_info=True)
         flash('Ошибка при очистке истории', 'error')
     return redirect(url_for('history'))
 
