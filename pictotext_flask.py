@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
 PicToText - Полная версия с обработкой всех типов файлов
+
+Основной модуль приложения для извлечения текста из изображений и документов.
+Поддерживает форматы: PDF, DOC, DOCX, TXT, JPG, JPEG, PNG, TIFF, BMP, WEBP.
+Использует Tesseract OCR для распознавания текста и дополнительные библиотеки для обработки документов.
 """
 
 import os
@@ -30,24 +34,25 @@ import zipfile
 import subprocess
 from tempfile import mkdtemp, NamedTemporaryFile
 
-# Настройка путей
+# Настройка путей к внешним инструментам
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 POPPLER_PATH = r'C:\Program Files\poppler-24.08.0\Library\bin'
 
-# Настройка временной директории
+# Настройка временной директории для обработки файлов
 if sys.platform == 'win32':
     tempfile.tempdir = os.path.join(os.environ['USERPROFILE'], 'temp_ocrtemp')
     os.makedirs(tempfile.tempdir, exist_ok=True)
 
+# Инициализация Flask приложения
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-here'
 app.config['UPLOAD_FOLDER'] = 'uploads'
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10 MB
 
-# Конфигурация
+# Разрешенные расширения файлов
 ALLOWED_EXTENSIONS = {'pdf', 'doc', 'docx', 'txt', 'jpg', 'jpeg', 'png', 'tiff', 'bmp', 'webp'}
 
-# Настройка MongoDB
+# Настройка подключения к MongoDB
 MONGO_URL = 'mongodb://localhost:27017/'
 DB_NAME = 'ocr_database'
 client = MongoClient(MONGO_URL)
@@ -55,13 +60,14 @@ db = client[DB_NAME]
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
+# Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Проверка наличия win32com
+# Проверка наличия win32com для работы с DOC файлами
 try:
     import win32com.client
 
@@ -70,13 +76,24 @@ except ImportError:
     HAS_WIN32COM = False
     logger.warning("pywin32 not installed, DOC file processing will be limited")
 
-# Глобальная блокировка для COM
+# Глобальная блокировка для COM объектов (для работы с Word)
 com_lock = Lock()
 
 
 class AccuracyCalculator:
+    """Класс для расчета точности распознавания текста"""
+
     @staticmethod
     def calculate_from_confidence(conf_data):
+        """
+        Рассчитывает точность на основе данных уверенности от Tesseract OCR
+
+        Args:
+            conf_data (list): Список значений уверенности для каждого распознанного слова
+
+        Returns:
+            float: Рассчитанная точность в процентах (0-100)
+        """
         valid_confs = [c for c in conf_data if c > 0]
         if not valid_confs:
             return 0
@@ -84,6 +101,15 @@ class AccuracyCalculator:
 
     @staticmethod
     def calculate_text_quality(text):
+        """
+        Анализирует качество текста на основе различных метрик
+
+        Args:
+            text (str): Текст для анализа
+
+        Returns:
+            float: Оценка качества текста (0-100)
+        """
         if not text:
             return 0
 
@@ -99,10 +125,12 @@ class AccuracyCalculator:
             'spaces_ratio': 0
         }
 
+        # Анализ слов и символов в тексте
         words = text.split()
         metrics['word_lengths'] = [len(word) for word in words if word.isalpha()]
         metrics['spaces_ratio'] = text.count(' ') / len(text) if text else 0
 
+        # Подсчет необычных символов и цифр
         for char in text:
             if not char.isalnum() and char not in ' .,!?;:-()\n\'"':
                 metrics['unusual_chars'] += 1
@@ -114,12 +142,12 @@ class AccuracyCalculator:
 
         quality = 100
 
-        # Штрафы за проблемы
+        # Штрафы за проблемы в тексте
         quality -= metrics['unusual_chars'] * 0.5
         quality -= metrics['digit_ratio'] * 30
         quality -= min(20, metrics['line_breaks'] * 10)
 
-        # Проверка среднего длины слова
+        # Проверка средней длины слова
         if metrics['word_lengths']:
             avg_word_len = mean(metrics['word_lengths'])
             if avg_word_len < 2 or avg_word_len > 12:
@@ -133,12 +161,16 @@ class AccuracyCalculator:
 
 
 class OCRProcessor:
+    """Основной класс для обработки файлов и извлечения текста"""
+
     def __init__(self):
-        self.default_languages = "eng+rus"
-        self.temp_dir = mkdtemp(prefix="ocr_temp_")
-        self.accuracy_calculator = AccuracyCalculator()
+        """Инициализация процессора OCR"""
+        self.default_languages = "eng+rus"  # Языки для распознавания
+        self.temp_dir = mkdtemp(prefix="ocr_temp_")  # Временная директория
+        self.accuracy_calculator = AccuracyCalculator()  # Калькулятор точности
 
     def __del__(self):
+        """Очистка временных файлов при уничтожении объекта"""
         try:
             for filename in os.listdir(self.temp_dir):
                 file_path = os.path.join(self.temp_dir, filename)
@@ -151,7 +183,15 @@ class OCRProcessor:
             pass
 
     def _is_image_data(self, data):
-        """Проверяет, являются ли данные изображением"""
+        """
+        Проверяет, являются ли данные изображением
+
+        Args:
+            data (bytes): Данные для проверки
+
+        Returns:
+            bool: True если данные являются изображением
+        """
         try:
             Image.open(io.BytesIO(data))
             return True
@@ -161,39 +201,40 @@ class OCRProcessor:
             return False
 
     def process_image(self, image):
-        """Улучшенная обработка изображений с дополнительными этапами предобработки"""
+        """
+        Обрабатывает изображение и извлекает текст с помощью Tesseract OCR
+
+        Args:
+            image (str/PIL.Image): Путь к файлу или объект изображения
+
+        Returns:
+            dict: Результат обработки с текстом и метаданными
+        """
         try:
+            # Загрузка изображения в OpenCV
             if isinstance(image, str):
-                # Если передан путь к файлу
                 img = cv2.imread(image)
                 if img is None:
                     with Image.open(image) as img_pil:
                         img = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
             else:
-                # Если передано изображение напрямую
                 img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
 
             if img is None:
                 raise ValueError("Invalid image")
 
-            # Конвертация в grayscale
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-            # Улучшение контраста с CLAHE
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            # Предварительная обработка изображения
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)  # Конвертация в оттенки серого
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))  # Улучшение контраста
             enhanced = clahe.apply(gray)
-
-            # Шумоподавление
-            denoised = cv2.fastNlMeansDenoising(enhanced, h=10)
-
-            # Бинаризация
-            _, binary = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            denoised = cv2.fastNlMeansDenoising(enhanced, h=10)  # Удаление шума
+            _, binary = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)  # Бинаризация
 
             # Дополнительная обработка для улучшения качества
             kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
             processed = cv2.filter2D(binary, -1, kernel)
 
-            # Распознавание с улучшенными параметрами
+            # Распознавание текста с улучшенными параметрами
             custom_config = r'--oem 3 --psm 6 -c preserve_interword_spaces=1'
             data = pytesseract.image_to_data(
                 processed,
@@ -202,9 +243,11 @@ class OCRProcessor:
                 output_type=pytesseract.Output.DICT
             )
 
+            # Формирование результата
             text = ' '.join([word for word, conf in zip(data['text'], data['conf']) if int(conf) > 0])
             confidences = [float(c) for c in data['conf'] if float(c) > 0]
 
+            # Расчет точности
             accuracy = self.accuracy_calculator.calculate_from_confidence(confidences)
             text_quality = self.accuracy_calculator.calculate_text_quality(text)
             final_accuracy = (accuracy * 0.7 + text_quality * 0.3)
@@ -225,6 +268,15 @@ class OCRProcessor:
             }
 
     def _extract_images_from_docx(self, docx_path):
+        """
+        Извлекает изображения из DOCX файла и распознает в них текст
+
+        Args:
+            docx_path (str): Путь к DOCX файлу
+
+        Returns:
+            dict: Результат распознавания текста из изображений
+        """
         try:
             image_results = {
                 'text': '',
@@ -233,17 +285,20 @@ class OCRProcessor:
                 'image_count': 0
             }
 
+            # DOCX - это ZIP архив, извлекаем изображения из него
             with zipfile.ZipFile(docx_path) as z:
                 for file in z.namelist():
                     if file.startswith('word/media/') and file.split('.')[-1].lower() in ['png', 'jpg', 'jpeg', 'bmp']:
                         with z.open(file) as img_file:
                             img_data = img_file.read()
 
+                            # Сохраняем временное изображение для обработки
                             with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_img:
                                 temp_img.write(img_data)
                                 temp_img_path = temp_img.name
 
                             try:
+                                # Обрабатываем изображение
                                 ocr_result = self.process_image(temp_img_path)
                                 if ocr_result['text'].strip():
                                     image_results['text'] += f"{ocr_result['text']}\n"
@@ -268,6 +323,15 @@ class OCRProcessor:
             }
 
     def _process_docx(self, docx_path):
+        """
+        Обрабатывает DOCX файл, извлекая текст и текст из изображений
+
+        Args:
+            docx_path (str): Путь к DOCX файлу
+
+        Returns:
+            dict: Результат обработки документа
+        """
         try:
             result = {
                 'text': '',
@@ -313,18 +377,14 @@ class OCRProcessor:
 
             # Рассчитываем точность
             if result['has_text'] and result['has_images']:
-                # Если есть и текст и изображения
                 text_quality = self.accuracy_calculator.calculate_text_quality(doc_text)
                 combined_accuracy = (text_quality * 0.7 + image_result['accuracy'] * 0.3)
                 result['accuracy'] = round(combined_accuracy, 1)
             elif result['has_text']:
-                # Если только текст
                 result['accuracy'] = self.accuracy_calculator.calculate_text_quality(doc_text)
             elif result['has_images']:
-                # Если только изображения
                 result['accuracy'] = image_result['accuracy']
             else:
-                # Если ничего не найдено
                 result['accuracy'] = 0
                 result['text'] = "Не удалось извлечь текст из DOCX файла"
 
@@ -339,6 +399,15 @@ class OCRProcessor:
             }
 
     def _process_doc(self, doc_path):
+        """
+        Обрабатывает DOC файл с использованием Word через COM интерфейс
+
+        Args:
+            doc_path (str): Путь к DOC файлу
+
+        Returns:
+            dict: Результат обработки документа
+        """
         if not HAS_WIN32COM:
             return {
                 'text': "Ошибка: Для обработки DOC файлов требуется установить pywin32\n"
@@ -352,6 +421,7 @@ class OCRProcessor:
             with com_lock:
                 pythoncom.CoInitialize()
 
+                # Используем Word для конвертации DOC в PDF
                 word = win32com.client.Dispatch("Word.Application")
                 word.Visible = False
 
@@ -359,9 +429,11 @@ class OCRProcessor:
                     doc = word.Documents.Open(os.path.abspath(doc_path))
                     doc_text = doc.Content.Text.strip()
 
+                    # Конвертируем в PDF для извлечения изображений
                     temp_pdf = os.path.join(self.temp_dir, f"temp_{os.path.basename(doc_path)}.pdf")
                     doc.SaveAs(temp_pdf, FileFormat=17)
 
+                    # Обрабатываем PDF для извлечения текста из изображений
                     pdf_result = self.process_pdf(temp_pdf)
 
                     result = {
@@ -396,6 +468,15 @@ class OCRProcessor:
             pythoncom.CoUninitialize()
 
     def process_pdf(self, file_path):
+        """
+        Обрабатывает PDF файл, извлекая текст напрямую или через OCR изображений
+
+        Args:
+            file_path (str): Путь к PDF файлу
+
+        Returns:
+            dict: Результат обработки PDF
+        """
         try:
             result = {
                 'text': '',
@@ -406,6 +487,7 @@ class OCRProcessor:
             }
 
             try:
+                # Пытаемся извлечь текст напрямую из PDF
                 with pdfplumber.open(file_path) as pdf:
                     for i, page in enumerate(pdf.pages):
                         page_text = page.extract_text() or ""
@@ -420,6 +502,7 @@ class OCRProcessor:
                 logger.warning(f"PDF text extraction failed, trying OCR: {e}")
 
             if not result['pages']:
+                # Если не удалось извлечь текст напрямую, конвертируем в изображения
                 images = convert_from_path(
                     file_path,
                     dpi=300,
@@ -428,6 +511,7 @@ class OCRProcessor:
                     fmt='jpeg'
                 )
 
+                # Обрабатываем каждую страницу как изображение
                 for i, image in enumerate(images):
                     try:
                         temp_img_path = os.path.join(self.temp_dir, f"page_{i}.jpg")
@@ -447,6 +531,7 @@ class OCRProcessor:
                         continue
 
             if result['pages']:
+                # Формируем итоговый текст со страницами
                 result['text'] = "\n".join(
                     f"--- Страница {i + 1} [Точность: {p['accuracy']}%] ---\n{p['text']}"
                     for i, p in enumerate(result['pages'])
@@ -466,6 +551,15 @@ class OCRProcessor:
             }
 
     def _process_txt(self, file_path):
+        """
+        Обрабатывает текстовый файл, проверяя не является ли он изображением
+
+        Args:
+            file_path (str): Путь к текстовому файлу
+
+        Returns:
+            dict: Результат обработки файла
+        """
         try:
             with open(file_path, 'rb') as f:
                 content = f.read()
@@ -536,6 +630,16 @@ class OCRProcessor:
             }
 
     def process_file(self, file_path, file_extension):
+        """
+        Основной метод для обработки файла по его расширению
+
+        Args:
+            file_path (str): Путь к файлу
+            file_extension (str): Расширение файла
+
+        Returns:
+            dict: Результат обработки файла
+        """
         processors = {
             'pdf': self.process_pdf,
             'doc': self._process_doc,
@@ -555,17 +659,40 @@ class OCRProcessor:
         return processors[file_extension](file_path)
 
 
+# Инициализация процессора OCR
 ocr_processor = OCRProcessor()
 
 
 class FileProcessor:
+    """Класс для работы с файлами в базе данных"""
+
     @staticmethod
     def save_to_db(file_data, session_id):
+        """
+        Сохраняет данные файла в базу данных
+
+        Args:
+            file_data (dict): Данные файла
+            session_id (str): Идентификатор сессии
+
+        Returns:
+            ObjectId: ID сохраненного документа
+        """
         file_data['session_id'] = session_id
         return db.files.insert_one(file_data).inserted_id
 
     @staticmethod
     def get_file_history(session_id, limit=20):
+        """
+        Получает историю файлов для сессии
+
+        Args:
+            session_id (str): Идентификатор сессии
+            limit (int): Максимальное количество файлов
+
+        Returns:
+            list: Список файлов из истории
+        """
         files = list(db.files.find({'session_id': session_id}).sort('processed_date', -1).limit(limit))
         for file in files:
             file['_id'] = str(file['_id'])
@@ -573,6 +700,16 @@ class FileProcessor:
 
     @staticmethod
     def get_file_by_id(file_id, session_id):
+        """
+        Получает файл по ID и сессии
+
+        Args:
+            file_id (str): ID файла
+            session_id (str): Идентификатор сессии
+
+        Returns:
+            dict: Данные файла или None если не найден
+        """
         file = db.files.find_one({'_id': ObjectId(file_id), 'session_id': session_id})
         if file:
             file['_id'] = str(file['_id'])
@@ -580,14 +717,41 @@ class FileProcessor:
 
     @staticmethod
     def clear_history(session_id):
+        """
+        Очищает историю файлов для сессии
+
+        Args:
+            session_id (str): Идентификатор сессии
+
+        Returns:
+            DeleteResult: Результат удаления
+        """
         return db.files.delete_many({'session_id': session_id})
 
 
 def allowed_file(filename):
+    """
+    Проверяет, разрешено ли расширение файла
+
+    Args:
+        filename (str): Имя файла
+
+    Returns:
+        bool: True если расширение разрешено
+    """
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
 def get_file_size_string(size_bytes):
+    """
+    Форматирует размер файла в читаемом виде
+
+    Args:
+        size_bytes (int): Размер в байтах
+
+    Returns:
+        str: Форматированная строка с размером
+    """
     if size_bytes < 1024:
         return f"{size_bytes} B"
     elif size_bytes < 1024 * 1024:
@@ -598,17 +762,22 @@ def get_file_size_string(size_bytes):
 
 @app.before_request
 def assign_session():
+    """
+    Middleware для назначения сессии если ее нет
+    """
     if 'session_id' not in session:
         session['session_id'] = os.urandom(16).hex()
 
 
 @app.route('/')
 def index():
+    """Главная страница приложения"""
     return render_template('index.html')
 
 
 @app.route('/history')
 def history():
+    """Страница истории обработки файлов"""
     files = FileProcessor.get_file_history(session['session_id'])
     for file in files:
         file['type'] = file['name'].split('.')[-1].upper()
@@ -619,6 +788,7 @@ def history():
 
 @app.route('/file/<file_id>')
 def file_details(file_id):
+    """Страница с деталями обработки файла"""
     file = FileProcessor.get_file_by_id(file_id, session['session_id'])
     if not file:
         flash('Файл не найден', 'error')
@@ -633,6 +803,12 @@ def file_details(file_id):
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
+    """
+    Обработчик загрузки файла
+
+    Returns:
+        JSON ответ с результатом обработки
+    """
     if 'file' not in request.files:
         return jsonify({'error': 'Файл не выбран'}), 400
 
@@ -641,6 +817,7 @@ def upload_file():
         return jsonify({'error': 'Файл не выбран'}), 400
 
     if file and allowed_file(file.filename):
+        # Проверка размера файла
         file.seek(0, 2)
         file_size = file.tell()
         file.seek(0)
@@ -648,16 +825,19 @@ def upload_file():
         if file_size > app.config['MAX_CONTENT_LENGTH']:
             return jsonify({'error': 'Размер файла не должен превышать 10 MB'}), 400
 
+        # Сохранение файла
         filename = secure_filename(file.filename)
         file_extension = filename.split('.')[-1].lower()
         file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         file.save(file_path)
 
         try:
+            # Обработка файла
             start_time = time.time()
             processing_result = ocr_processor.process_file(file_path, file_extension)
             processing_time = round(time.time() - start_time, 2)
 
+            # Подготовка данных для сохранения
             file_data = {
                 'name': filename,
                 'type': file_extension.upper(),
@@ -677,6 +857,7 @@ def upload_file():
                 file_data['page_count'] = len(processing_result['pages'])
                 file_data['avg_page_accuracy'] = processing_result['accuracy']
 
+            # Сохранение в базу данных
             file_id = FileProcessor.save_to_db(file_data, session['session_id'])
 
             return jsonify({
@@ -696,6 +877,7 @@ def upload_file():
             return jsonify({'error': f'Ошибка обработки файла: {str(e)}'}), 500
 
         finally:
+            # Удаление временного файла
             if os.path.exists(file_path):
                 os.remove(file_path)
     else:
@@ -704,6 +886,7 @@ def upload_file():
 
 @app.route('/clear_history', methods=['POST'])
 def clear_history():
+    """Очистка истории обработки файлов"""
     try:
         result = FileProcessor.clear_history(session['session_id'])
         flash(f'Удалено {result.deleted_count} файлов из истории', 'success')
